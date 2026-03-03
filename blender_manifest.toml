@@ -1,0 +1,10 @@
+schema_version = "1.0.0"
+id = "stmap_exporter"
+version = "1.0.0"
+name = "STMap Exporter"
+tagline = "STMap Exporter for All Distortion Models"
+maintainer = "Naoki Korematsu" 
+type = "add-on"
+blender_version_min = "4.2.0"
+license = ["SPDX:GPL-3.0-or-later"]
+tags = ["Tracking", "Import-Export"]
