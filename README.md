@@ -1,4 +1,4 @@
-# STMap Exporter
+# STMap Exporter(GPU Acceleration)
 
 ## Overview
 
