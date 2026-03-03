@@ -1,5 +1,5 @@
 """
-STMap Exporter
+STMap Exporter(GPU Acceleration)
 
 """
 
@@ -219,24 +219,28 @@ def calculate_overscan_dimensions(context, props, clip):
     model, params = get_distortion_params(tracking_cam)
     distortion_is_zero = is_distortion_zero(params)
     
-    orig_w = float(clip.size[0])
-    orig_h = float(clip.size[1])
-    
+    orig_w, orig_h = float(clip.size[0]), float(clip.size[1])
     base_w = float(props.custom_res_x) if props.use_custom_resolution else orig_w
     base_h = float(props.custom_res_y) if props.use_custom_resolution else orig_h
     
     scale_x = base_w / orig_w
     scale_y = base_h / orig_h
     
-    pr_x = float(getattr(tracking_cam, 'principal', [0.0, 0.0])[0]) * scale_x
-    pr_y = float(getattr(tracking_cam, 'principal', [0.0, 0.0])[1]) * scale_y
-    cx = base_w / 2.0 + pr_x
-    cy = base_h / 2.0 + pr_y
-    
     cam_sensor_base = float(tracking_cam.sensor_width)
-    focal_px = float(tracking_cam.focal_length) * (orig_w / cam_sensor_base)
     pixel_aspect = float(getattr(tracking_cam, 'pixel_aspect', 1.0))
     
+    focal_px = float(tracking_cam.focal_length) * (orig_w / cam_sensor_base) if cam_sensor_base > 0 else 0.0
+
+    pp = getattr(tracking_cam, 'principal_point', [0.0, 0.0])
+    pr_x_px = (pp[0] * orig_w) / 2.0
+    pr_y_px = (pp[1] * orig_w) / 2.0
+    
+    pr_x = pr_x_px * scale_x
+    pr_y = pr_y_px * scale_y
+    
+    cx = base_w / 2.0 + pr_x
+    cy = base_h / 2.0 + pr_y
+
     if model == 'NUKE':
         fx_math = base_w / 2.0
         fy_math = (base_w / 2.0) / pixel_aspect
