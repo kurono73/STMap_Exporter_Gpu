@@ -10,6 +10,7 @@ It accurately calculates Blender's internal distortion models (Polynomial, Divis
 
 * **Pixel-Perfect Math**: Faithfully replicates Blender's internal normalization scales, principal point shifts, and asymmetric aspect ratios, completely eliminating the visual mismatch commonly found between Blender and compositors.
 * **Advanced Overscan Control**: Choose between Auto BBox expansion based on the distortion curve, or set a Custom resolution to align exactly with your CG overscan pipelines.
+* **BBox-Aware EXR Export**: Supports BBox-aware EXR export by writing dataWindow/displayWindow metadata, allowing overscan STMaps to preserve their correct image bounds in compatible compositing tools.
 * **Scene Integration**: One-click operators to apply the calculated overscan resolution to your Scene render settings and automatically scale the active Camera's sensor width to maintain the exact field of view.
 * **GPU Acceleration**: Includes a 1-click, built-in installer for CuPy (CUDA), enabling massive performance boosts for high-resolution STMap generation using your NVIDIA GPU. *(Requires a one-time initial setup and a Blender restart).*
 * **Preset System**: Save and load your favorite configurations directly from the standard Blender panel header.
@@ -70,17 +71,11 @@ It accurately calculates Blender's internal distortion models (Polynomial, Divis
 * **Format**: Image format for the exported files. **OpenEXR is highly recommended**.
 * **Color Depth (EXR)**: Choose between 16-bit (Half) or 32-bit (Full) Float. **32-bit Float is strongly recommended** to prevent sub-pixel stepping and banding.
 * **Codec**: Compression method for OpenEXR files. `ZIP` (lossless) is the standard default.
-* **Remap to [0-1] (BBox)**: When exporting the *Redistort Map*, checking this will strictly squeeze the UV values into a 0.0–1.0 range relative to the expanded bounding box. This is necessary if you must use non-floating-point formats (like PNG or TIFF) which clip negative values. For standard EXR workflows in Nuke, leave this **OFF** to keep the negative UV coordinates intact.
+* **Remap to [0-1] (BBox)**: When exporting the Redistort Map, remaps UV values into a strict 0.0-1.0 range relative to the expanded overscan image. Use this for non-floating-point formats such as PNG or TIFF, or for workflows that do not support EXR dataWindow/displayWindow metadata. For standard EXR/Nuke workflows, leave this OFF to preserve negative/out-of-range UV values and use BBox metadata instead.
 
 #### Auto BBox Limits
 
 * **Overscan Limit (%)**: A safety limiter for the `Auto` mode to prevent out-of-memory errors on extreme distortion curves. Default is 50% of the base resolution.
 * **Extra Padding (px)**: Adds an additional, uniform pixel padding margin around the Auto-calculated bounding box.
 
----
 
-## Future Roadmap: OpenEXR Data and Display Window Support
-
-Currently, to prevent heavily distorted image corners from being cropped, this add-on handles overscan by physically expanding the output resolution (adding padding) of the generated STMaps.
-
-Blender developers are currently working to **"Support display window in EXR Writer"**. Once this feature is officially implemented and accessible via the Python API, this add-on will be updated to utilize OpenEXR's native `dataWindow` and `displayWindow` metadata.
