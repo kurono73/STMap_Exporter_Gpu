@@ -12,6 +12,11 @@ import subprocess
 import numpy as np
 import bl_operators
 
+try:
+    import OpenImageIO as oiio
+except Exception:
+    oiio = None
+
 # ------------------------------------------------------------------------
 # GPU Support (Optional CuPy)
 # ------------------------------------------------------------------------
@@ -321,6 +326,60 @@ def generate_checkerboard(width, height, min_x, min_y, base_w, cx, cy, grid_coun
 
 def get_extension_from_format(format_enum):
     return {'OPEN_EXR': 'exr', 'TIFF': 'tif', 'PNG': 'png'}.get(format_enum, 'exr')
+
+def update_exr_windows_oiio(file_path, data_window, display_window):
+    if oiio is None:
+        return False, "OpenImageIO module is not available."
+
+    if not os.path.exists(file_path):
+        return False, f"File not found: {file_path}"
+
+    input_file = None
+    output_file = None
+
+    try:
+        input_file = oiio.ImageInput.open(file_path)
+        if not input_file:
+            return False, "Could not open EXR for reading."
+
+        input_spec = input_file.spec()
+        output_spec = input_spec
+
+        dw = tuple(int(v) for v in data_window)
+        disp = tuple(int(v) for v in display_window)
+
+        data_roi = oiio.ROI(dw[0], dw[2], dw[1], dw[3])
+        display_roi = oiio.ROI(disp[0], disp[2], disp[1], disp[3])
+
+        oiio.set_roi(output_spec, data_roi)
+        oiio.set_roi_full(output_spec, display_roi)
+
+        data = input_file.read_image()
+        input_file.close()
+        input_file = None
+
+        if data is None:
+            return False, "Could not read EXR pixels."
+
+        output_file = oiio.ImageOutput.create(file_path)
+        if not output_file:
+            return False, "Could not create EXR output."
+
+        if not output_file.open(file_path, output_spec):
+            return False, "Could not open EXR for writing."
+
+        output_file.write_image(data)
+        output_file.close()
+        output_file = None
+        return True, ""
+
+    except Exception as e:
+        return False, str(e)
+    finally:
+        if input_file:
+            input_file.close()
+        if output_file:
+            output_file.close()
 
 
 # ------------------------------------------------------------------------
@@ -778,7 +837,14 @@ class STMAP_OT_export(bpy.types.Operator):
         
         name = "Undistort" if is_undistort else "Redistort"
         filepath = os.path.join(ep['output_dir'], f"{ep['prefix']}_{name}_STMap.{ep['ext']}")
-        self.save_image(filepath, map_x, map_y, w, h, ep['props'], context.scene)
+        if is_undistort and not ep['props'].remap_bbox:
+            exr_windows = {
+                'data': (ep['min_x'], ep['min_y'], ep['max_x'], ep['max_y']),
+                'display': (0, 0, int(ep['base_w']), int(ep['base_h'])),
+            }
+        else:
+            exr_windows = None
+        self.save_image(filepath, map_x, map_y, w, h, ep['props'], context.scene, exr_windows)
 
     def export_grids(self, ep):
         chk = generate_checkerboard(ep['out_w'], ep['out_h'], ep['min_x'], ep['min_y'], ep['base_w'], ep['cx'], ep['cy'], ep['props'].grid_count)
@@ -814,7 +880,7 @@ class STMAP_OT_export(bpy.types.Operator):
         else:
             self.report({'WARNING'}, "No export options selected.")
 
-    def save_image(self, fp, u, v, w, h, props, scene):
+    def save_image(self, fp, u, v, w, h, props, scene, exr_windows=None):
         is_float = props.file_format == 'OPEN_EXR'
         img = bpy.data.images.new("TMP", w, h, alpha=False, float_buffer=is_float)
         img.colorspace_settings.name = 'Non-Color'
@@ -830,6 +896,10 @@ class STMAP_OT_export(bpy.types.Operator):
             else: rnd.color_depth = props.std_depth
             scene.view_settings.view_transform = 'Raw'
             img.save_render(fp, scene=scene)
+            if is_float and exr_windows:
+                ok, msg = update_exr_windows_oiio(fp, exr_windows['data'], exr_windows['display'])
+                if not ok:
+                    self.report({'WARNING'}, f"EXR BBox metadata was not updated: {msg}")
         finally:
             rnd.file_format, rnd.color_depth, rnd.exr_codec, scene.view_settings.view_transform = orig
             bpy.data.images.remove(img)

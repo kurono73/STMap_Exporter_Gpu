@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "stmap_exporter_gpu"
-version = "1.0.0"
+version = "1.0.1"
 name = "STMap Exporter(GPU Accelerated)"
 tagline = "STMap Exporter for All Distortion Models"
 maintainer = "Naoki Korematsu" 
