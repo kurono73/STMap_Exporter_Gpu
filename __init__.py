@@ -381,6 +381,55 @@ def update_exr_windows_oiio(file_path, data_window, display_window):
         if output_file:
             output_file.close()
 
+def save_exr_oiio(file_path, u, v, w, h, props, exr_windows=None):
+    if oiio is None:
+        return False, "OpenImageIO module is not available."
+
+    output_file = None
+
+    try:
+        pixel_type = getattr(oiio, "TypeHalf", None) if props.exr_depth == '16' else getattr(oiio, "TypeFloat", None)
+        if pixel_type is None:
+            pixel_type = getattr(oiio, "HALF", None) if props.exr_depth == '16' else getattr(oiio, "FLOAT", None)
+        if pixel_type is None:
+            pixel_type = getattr(oiio, "TypeFloat", None) or getattr(oiio, "FLOAT", None)
+        if pixel_type is None and hasattr(oiio, "TypeDesc"):
+            pixel_type = oiio.TypeDesc("half" if props.exr_depth == '16' else "float")
+
+        dtype = np.float16 if props.exr_depth == '16' else np.float32
+        pixels = np.zeros((h, w, 4), dtype=dtype)
+        pixels[..., 0] = u[::-1, :]
+        pixels[..., 1] = v[::-1, :]
+        pixels[..., 3] = 1.0
+
+        spec = oiio.ImageSpec(int(w), int(h), 4, pixel_type)
+        spec.channelnames = ["R", "G", "B", "A"]
+        spec.attribute("compression", props.exr_codec.lower())
+
+        if exr_windows:
+            dw = tuple(int(v) for v in exr_windows['data'])
+            disp = tuple(int(v) for v in exr_windows['display'])
+            oiio.set_roi(spec, oiio.ROI(dw[0], dw[2], dw[1], dw[3]))
+            oiio.set_roi_full(spec, oiio.ROI(disp[0], disp[2], disp[1], disp[3]))
+
+        output_file = oiio.ImageOutput.create(file_path)
+        if not output_file:
+            return False, "Could not create EXR output."
+
+        if not output_file.open(file_path, spec):
+            return False, "Could not open EXR for writing."
+
+        output_file.write_image(pixels)
+        output_file.close()
+        output_file = None
+        return True, ""
+
+    except Exception as e:
+        return False, str(e)
+    finally:
+        if output_file:
+            output_file.close()
+
 
 # ------------------------------------------------------------------------
 # UI Callbacks & Property Updates
@@ -798,11 +847,11 @@ class STMAP_OT_export(bpy.types.Operator):
     def execute_export(self, ep, context):
         msgs = []
         if ep['props'].export_undistort:
-            self.export_map(ep, context, is_undistort=True)
-            msgs.append("Undistort Map")
+            if self.export_map(ep, context, is_undistort=True):
+                msgs.append("Undistort Map")
         if ep['props'].export_redistort:
-            self.export_map(ep, context, is_undistort=False)
-            msgs.append("Redistort Map")
+            if self.export_map(ep, context, is_undistort=False):
+                msgs.append("Redistort Map")
         if ep['props'].export_grids:
             self.export_grids(ep)
             msgs.append("Checker Grids")
@@ -844,7 +893,7 @@ class STMAP_OT_export(bpy.types.Operator):
             }
         else:
             exr_windows = None
-        self.save_image(filepath, map_x, map_y, w, h, ep['props'], context.scene, exr_windows)
+        return self.save_image(filepath, map_x, map_y, w, h, ep['props'], context.scene, exr_windows)
 
     def export_grids(self, ep):
         chk = generate_checkerboard(ep['out_w'], ep['out_h'], ep['min_x'], ep['min_y'], ep['base_w'], ep['cx'], ep['cy'], ep['props'].grid_count)
@@ -882,6 +931,12 @@ class STMAP_OT_export(bpy.types.Operator):
 
     def save_image(self, fp, u, v, w, h, props, scene, exr_windows=None):
         is_float = props.file_format == 'OPEN_EXR'
+        if is_float:
+            ok, msg = save_exr_oiio(fp, u, v, w, h, props, exr_windows)
+            if ok:
+                return True
+            self.report({'WARNING'}, f"OpenImageIO EXR export failed; falling back to Blender save_render: {msg}")
+
         img = bpy.data.images.new("TMP", w, h, alpha=False, float_buffer=is_float)
         img.colorspace_settings.name = 'Non-Color'
         pixels = np.zeros((h, w, 4), dtype=np.float32)
@@ -900,6 +955,10 @@ class STMAP_OT_export(bpy.types.Operator):
                 ok, msg = update_exr_windows_oiio(fp, exr_windows['data'], exr_windows['display'])
                 if not ok:
                     self.report({'WARNING'}, f"EXR BBox metadata was not updated: {msg}")
+            return True
+        except Exception as e:
+            self.report({'ERROR'}, f"Image save failed: {str(e)}")
+            return False
         finally:
             rnd.file_format, rnd.color_depth, rnd.exr_codec, scene.view_settings.view_transform = orig
             bpy.data.images.remove(img)
