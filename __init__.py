@@ -327,6 +327,11 @@ def generate_checkerboard(width, height, min_x, min_y, base_w, cx, cy, grid_coun
 def get_extension_from_format(format_enum):
     return {'OPEN_EXR': 'exr', 'TIFF': 'tif', 'PNG': 'png'}.get(format_enum, 'exr')
 
+def round_up_displacement_max(value, step):
+    value = float(max(abs(value), EPSILON_ZERO))
+    step = float(max(step, EPSILON_ZERO))
+    return float(np.ceil(value / step) * step)
+
 def update_exr_windows_oiio(file_path, data_window, display_window):
     if oiio is None:
         return False, "OpenImageIO module is not available."
@@ -536,12 +541,22 @@ class STMapExporterProperties(bpy.types.PropertyGroup):
     custom_name: bpy.props.StringProperty(
         name="", description="Custom prefix string for exported files", default=""
     )
+    export_map_type: bpy.props.EnumProperty(
+        name="Map Type",
+        description="Choose which map format to export",
+        items=[
+            ('STMAP', "STMap", "Export standard STMaps"),
+            ('AE_DISPLACEMENT', "AE Displacement", "Export After Effects Displacement Maps"),
+            ('BOTH', "STMap + AE Displacement", "Export both standard STMaps and After Effects Displacement Maps"),
+        ],
+        default='STMAP'
+    )
     
     export_undistort: bpy.props.BoolProperty(
-        name="Undistort Map", description="Export the Undistort STMap (Forward mapping from Distorted to Undistorted)", default=True
+        name="Undistort", description="Export the undistort direction for the selected map type", default=True
     )
     export_redistort: bpy.props.BoolProperty(
-        name="Redistort Map", description="Export the Redistort STMap (Inverse mapping from Undistorted to Distorted)", default=True
+        name="Redistort", description="Export the redistort direction for the selected map type", default=True
     )
     export_grids: bpy.props.BoolProperty(
         name="Checkerboard Guides", description="Export grayscale checkerboard grids to visualize the distortion effect", default=False
@@ -549,7 +564,6 @@ class STMapExporterProperties(bpy.types.PropertyGroup):
     grid_count: bpy.props.IntProperty(
         name="Grid Count (X)", description="Number of checker squares along the image width", default=25, min=2, max=128
     )
-    
     use_custom_resolution: bpy.props.BoolProperty(
         name="Override Base Res", description="Override the base resolution instead of using the clip's original resolution", default=False, update=update_use_custom_res
     )
@@ -618,10 +632,24 @@ class STMapExporterProperties(bpy.types.PropertyGroup):
         description="Remap Redistort UVs to a strict 0.0-1.0 range based on the expanded bounding box. Useful for non-floating point formats (PNG/TIFF) to prevent clipping negative values", 
         default=False
     )
-    
+    ae_displace_round_up: bpy.props.BoolProperty(
+        name="Round Up Auto Max", description="Round calculated AE displacement max values up to a clean pixel step", default=True
+    )
+    ae_displace_round_step: bpy.props.FloatProperty(
+        name="Step", description="Pixel step used when rounding AE displacement max values", default=10.0, min=0.001
+    )
+    ae_displace_use_custom_max: bpy.props.BoolProperty(
+        name="Use Custom Max", description="Use manually specified AE Max Horizontal/Vertical Displacement values", default=False
+    )
+    ae_displace_max_x: bpy.props.FloatProperty(
+        name="Max H", description="Custom Max Horizontal Displacement value for After Effects", default=100.0, min=0.001
+    )
+    ae_displace_max_y: bpy.props.FloatProperty(
+        name="Max V", description="Custom Max Vertical Displacement value for After Effects", default=100.0, min=0.001
+    )
     show_options: bpy.props.BoolProperty(name="Options", description="Show advanced format and performance settings", default=False)
     use_gpu: bpy.props.BoolProperty(
-        name="Use GPU Acceleration", description="Use CUDA GPU for much faster calculations. Falls back to CPU if unavailable", default=GPU_AVAILABLE
+        name="Use GPU Acceleration", description="Use CUDA GPU for much faster calculations. Falls back to CPU if unavailable", default=True
     )
     cuda_version: bpy.props.EnumProperty(
         name="CUDA Version", description="Select your NVIDIA driver's CUDA version for CuPy installation",
@@ -650,6 +678,29 @@ class STMAP_OT_install_cupy(bpy.types.Operator):
             pass
         return None
 
+    def run_pip_install(self, pkg_name):
+        return subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", pkg_name],
+            capture_output=True,
+            text=True
+        )
+
+    def is_cupy_installed(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import importlib.util; raise SystemExit(0 if importlib.util.find_spec('cupy') else 1)"
+            ],
+            capture_output=True,
+            text=True
+        )
+        return result.returncode == 0
+
+    def get_pip_error(self, result):
+        output = "\n".join(part for part in (result.stderr, result.stdout) if part)
+        return output[-500:] if output else f"pip exited with code {result.returncode}"
+
     def execute(self, context):
         props = context.scene.stmap_exporter_props
         target_version = props.cuda_version
@@ -667,11 +718,18 @@ class STMAP_OT_install_cupy(bpy.types.Operator):
         self.report({'INFO'}, f"Installing {pkg_name}... Blender will freeze. Please wait.")
         
         try:
-            subprocess.run([sys.executable, "-m", "pip", "install", pkg_name], check=True, capture_output=True, text=True)
-            self.report({'INFO'}, f"{pkg_name} installed successfully! Please restart Blender.")
-            return {'FINISHED'}
-        except subprocess.CalledProcessError as e:
-            err = e.stderr[-200:] if e.stderr else "Unknown pip error"
+            result = self.run_pip_install(pkg_name)
+            if result.returncode == 0 or self.is_cupy_installed():
+                self.report({'INFO'}, f"{pkg_name} installed successfully! Please restart Blender.")
+                return {'FINISHED'}
+
+            self.report({'INFO'}, f"Retrying {pkg_name} installation once...")
+            result = self.run_pip_install(pkg_name)
+            if result.returncode == 0 or self.is_cupy_installed():
+                self.report({'INFO'}, f"{pkg_name} installed successfully! Please restart Blender.")
+                return {'FINISHED'}
+
+            err = self.get_pip_error(result)
             self.report({'ERROR'}, f"Failed to install {pkg_name}: {err}")
             return {'CANCELLED'}
         except Exception as e:
@@ -846,15 +904,31 @@ class STMAP_OT_export(bpy.types.Operator):
     
     def execute_export(self, ep, context):
         msgs = []
-        if ep['props'].export_undistort:
+        export_stmap = ep['props'].export_map_type in {'STMAP', 'BOTH'}
+        export_ae = ep['props'].export_map_type in {'AE_DISPLACEMENT', 'BOTH'}
+
+        if export_stmap and ep['props'].export_undistort:
             if self.export_map(ep, context, is_undistort=True):
                 msgs.append("Undistort Map")
-        if ep['props'].export_redistort:
+        if export_stmap and ep['props'].export_redistort:
             if self.export_map(ep, context, is_undistort=False):
                 msgs.append("Redistort Map")
         if ep['props'].export_grids:
             self.export_grids(ep)
             msgs.append("Checker Grids")
+        ae_settings = []
+        if export_ae and ep['props'].export_undistort:
+            result = self.export_ae_displacement_map(ep, context, is_undistort=True)
+            if result:
+                ae_settings.append(result)
+                msgs.append("AE Undistort Displacement")
+        if export_ae and ep['props'].export_redistort:
+            result = self.export_ae_displacement_map(ep, context, is_undistort=False)
+            if result:
+                ae_settings.append(result)
+                msgs.append("AE Redistort Displacement")
+        if ae_settings:
+            self.write_ae_settings(ep, ae_settings)
         return msgs
 
     def export_map(self, ep, context, is_undistort):
@@ -894,6 +968,93 @@ class STMAP_OT_export(bpy.types.Operator):
         else:
             exr_windows = None
         return self.save_image(filepath, map_x, map_y, w, h, ep['props'], context.scene, exr_windows)
+
+    def export_ae_displacement_map(self, ep, context, is_undistort):
+        w, h = (ep['out_w'], ep['out_h']) if is_undistort else (int(ep['base_w']), int(ep['base_h']))
+        min_x, min_y = (ep['min_x'], ep['min_y']) if is_undistort else (0, 0)
+
+        ys, xs = np.mgrid[0:h, 0:w].astype(np.float64)
+        xn = (xs + min_x + 0.5 - ep['cx']) / ep['fx_math']
+        yn = (ys + min_y + 0.5 - ep['cy']) / ep['fy_math']
+
+        if is_undistort:
+            x_res, y_res = calc_distortion(xn, yn, ep['model'], ep['params'], ep['use_gpu'])
+            target_x = x_res * ep['fx_math'] + ep['cx'] - ep['min_x']
+            target_y = y_res * ep['fy_math'] + ep['cy'] - ep['min_y']
+        else:
+            x_res, y_res = calc_undistortion(xn, yn, ep['model'], ep['params'], ep['use_gpu'])
+            target_x = x_res * ep['fx_math'] + ep['cx']
+            target_y = y_res * ep['fy_math'] + ep['cy']
+
+        dx = target_x - xs
+        dy = target_y - ys
+        dy = -dy
+
+        raw_max_x = float(np.max(np.abs(dx))) if dx.size else 0.0
+        raw_max_y = float(np.max(np.abs(dy))) if dy.size else 0.0
+
+        if ep['props'].ae_displace_use_custom_max:
+            max_x = float(ep['props'].ae_displace_max_x)
+            max_y = float(ep['props'].ae_displace_max_y)
+        elif ep['props'].ae_displace_round_up:
+            max_x = round_up_displacement_max(raw_max_x, ep['props'].ae_displace_round_step)
+            max_y = round_up_displacement_max(raw_max_y, ep['props'].ae_displace_round_step)
+        else:
+            max_x = max(raw_max_x, EPSILON_ZERO)
+            max_y = max(raw_max_y, EPSILON_ZERO)
+
+        clipped_x = raw_max_x > max_x
+        clipped_y = raw_max_y > max_y
+
+        map_x = np.clip(0.5 + (dx / (2.0 * max_x)), 0.0, 1.0).astype(np.float32)
+        map_y = np.clip(0.5 + (dy / (2.0 * max_y)), 0.0, 1.0).astype(np.float32)
+
+        name = "Undistort" if is_undistort else "Redistort"
+        filepath = os.path.join(ep['output_dir'], f"{ep['prefix']}_{name}_AE_Displacement.{ep['ext']}")
+        ok = self.save_image(filepath, map_x, map_y, w, h, ep['props'], context.scene, None)
+        if clipped_x or clipped_y:
+            self.report({'WARNING'}, f"{name} AE displacement clipped. Increase custom Max values.")
+        if not ok:
+            return None
+        return {
+            'name': name,
+            'image': os.path.basename(filepath),
+            'w': int(w),
+            'h': int(h),
+            'max_x': max_x,
+            'max_y': max_y,
+            'clipped': clipped_x or clipped_y,
+        }
+
+    def write_ae_settings(self, ep, settings):
+        settings_path = os.path.join(ep['output_dir'], f"{ep['prefix']}_AE_Displacement_Settings.txt")
+        lines = [
+            "After Effects Displacement Map Settings",
+            "",
+            "AE Usage:",
+            "1. Import the displacement map and preserve RGB values (disable color management/conversion for the map).",
+            "2. Use a 32 bpc composition when possible.",
+            "3. Apply Effect > Distort > Displacement Map to the target layer or an adjustment layer.",
+            "",
+            "Effect: Displacement Map",
+            "Use For Horizontal Displacement: Red",
+            "Use For Vertical Displacement: Green",
+        ]
+        for item in settings:
+            lines.extend([
+                "",
+                f"{item['name']}:",
+                f"Image: {item['image']}",
+                f"Resolution: {item['w']} x {item['h']}",
+                f"Max Horizontal Displacement: {item['max_x']:.6f}",
+                f"Max Vertical Displacement: {item['max_y']:.6f}",
+                f"Clipped: {'Yes' if item['clipped'] else 'No'}",
+            ])
+        try:
+            with open(settings_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+        except Exception as e:
+            self.report({'WARNING'}, f"AE settings TXT was not written: {str(e)}")
 
     def export_grids(self, ep):
         chk = generate_checkerboard(ep['out_w'], ep['out_h'], ep['min_x'], ep['min_y'], ep['base_w'], ep['cx'], ep['cy'], ep['props'].grid_count)
@@ -994,6 +1155,7 @@ class STMAP_OT_add_preset(bl_operators.presets.AddPresetBase, bpy.types.Operator
     ]
     
     preset_values = [
+        "props.export_map_type",
         "props.export_undistort",
         "props.export_redistort",
         "props.export_grids",
@@ -1014,6 +1176,11 @@ class STMAP_OT_add_preset(bl_operators.presets.AddPresetBase, bpy.types.Operator
         "props.exr_codec",
         "props.std_depth",
         "props.remap_bbox",
+        "props.ae_displace_round_up",
+        "props.ae_displace_round_step",
+        "props.ae_displace_use_custom_max",
+        "props.ae_displace_max_x",
+        "props.ae_displace_max_y",
         "props.use_gpu"
     ]
     preset_subdir = "stmap_exporter"
@@ -1077,6 +1244,23 @@ class STMAP_PT_main_panel(bpy.types.Panel):
             b = layout.box()
             b.label(text="Warning: Zero distortion values.", icon='ERROR')
             layout.separator()
+
+        if props.use_gpu and not GPU_AVAILABLE:
+            b = layout.box()
+            b.label(text="Initial GPU Setup", icon='ERROR')
+            b.label(text="CuPy is not installed. Currently using CPU fallback.", icon='INFO')
+            r = b.row(align=True)
+            r.prop(props, "cuda_version")
+            r.operator("stmap.install_cupy", icon='IMPORT', text=f"Install CuPy ({props.cuda_version})")
+            n = b.column()
+            n.scale_y = 0.8
+            n.label(text="Restart Blender after installation.")
+            layout.separator()
+        elif not props.use_gpu:
+            b = layout.box()
+            b.label(text="GPU acceleration is disabled.", icon='INFO')
+            b.prop(props, "use_gpu")
+            layout.separator()
             
         b = layout.box()
         b.prop(props, "output_folder", text="")
@@ -1095,6 +1279,8 @@ class STMAP_PT_main_panel(bpy.types.Panel):
         b = layout.box()
         b.label(text="Export Contents", icon='EXPORT')
         c = b.column(align=True)
+        c.prop(props, "export_map_type")
+        c.separator()
         c.prop(props, "export_undistort")
         c.prop(props, "export_redistort")
         c.separator()
@@ -1183,16 +1369,22 @@ class STMAP_PT_main_panel(bpy.types.Panel):
             col.label(text="Performance:")
             perf_box = col.box()
             perf_box.prop(props, "use_gpu")
-            
-            if props.use_gpu and not GPU_AVAILABLE:
+            if GPU_AVAILABLE:
+                perf_box.label(text="CuPy detected. GPU acceleration is ready.", icon='CHECKMARK')
+            elif props.use_gpu:
+                perf_box.label(text="GPU setup required: CuPy is not installed.", icon='ERROR')
+                perf_box.label(text="Current mode: CPU fallback", icon='INFO')
                 perf_box.separator()
-                perf_box.label(text="CuPy is not installed.", icon='INFO')
                 perf_box.prop(props, "cuda_version")
                 perf_box.operator("stmap.install_cupy", icon='IMPORT', text=f"Install CuPy ({props.cuda_version})")
                 n = perf_box.column()
                 n.scale_y = 0.8
                 n.label(text="* Requires NVIDIA GPU", icon='ERROR')
                 n.label(text="* Blender will freeze during install")
+                n.label(text="* Restart Blender after installation")
+            else:
+                perf_box.label(text="Current mode: CPU fallback", icon='INFO')
+                perf_box.label(text="Enable Use GPU Acceleration to show setup options.")
                 
             col.separator()
             col.label(text="Format Settings:")
@@ -1204,6 +1396,19 @@ class STMAP_PT_main_panel(bpy.types.Panel):
                 fb.prop(props, "std_depth")
             fb.separator()
             fb.prop(props, "remap_bbox")
+
+            col.separator()
+            col.label(text="After Effects Displacement:")
+            ae = col.box()
+            ae.prop(props, "ae_displace_use_custom_max")
+            if props.ae_displace_use_custom_max:
+                r = ae.row(align=True)
+                r.prop(props, "ae_displace_max_x")
+                r.prop(props, "ae_displace_max_y")
+            else:
+                ae.prop(props, "ae_displace_round_up")
+                if props.ae_displace_round_up:
+                    ae.prop(props, "ae_displace_round_step")
             
             col.separator()
             col.label(text="Auto BBox Limits:")
