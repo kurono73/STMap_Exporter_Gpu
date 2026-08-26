@@ -327,6 +327,11 @@ def generate_checkerboard(width, height, min_x, min_y, base_w, cx, cy, grid_coun
 def get_extension_from_format(format_enum):
     return {'OPEN_EXR': 'exr', 'TIFF': 'tif', 'PNG': 'png'}.get(format_enum, 'exr')
 
+def get_default_output_folder_text():
+    if bpy.data.filepath:
+        return f"Default output: {os.path.dirname(bpy.path.abspath('//'))}"
+    return "Default output: save the .blend file first, or choose a folder"
+
 def round_up_displacement_max(value, step):
     value = float(max(abs(value), EPSILON_ZERO))
     step = float(max(step, EPSILON_ZERO))
@@ -405,6 +410,8 @@ def save_exr_oiio(file_path, u, v, w, h, props, exr_windows=None):
         pixels = np.zeros((h, w, 4), dtype=dtype)
         pixels[..., 0] = u[::-1, :]
         pixels[..., 1] = v[::-1, :]
+        if props.exr_blue_channel_one:
+            pixels[..., 2] = 1.0
         pixels[..., 3] = 1.0
 
         spec = oiio.ImageSpec(int(w), int(h), 4, pixel_type)
@@ -622,6 +629,11 @@ class STMapExporterProperties(bpy.types.PropertyGroup):
         items=[('NONE', "None", ""), ('PXR24', "Pxr24", ""), ('ZIP', "ZIP", ""), 
                ('PIZ', "PIZ", ""), ('RLE', "RLE", ""), ('ZIPS', "ZIPS", ""), 
                ('DWAA', "DWAA", ""), ('DWAB', "DWAB", "")], default='ZIP'
+    )
+    exr_blue_channel_one: bpy.props.BoolProperty(
+        name="Set B Channel to 1.0",
+        description="Write 1.0 to the EXR blue channel for better compatibility when using the map inside Blender",
+        default=False
     )
     std_depth: bpy.props.EnumProperty(
         name="Color Depth", description="Color depth for standard image formats",
@@ -1096,32 +1108,24 @@ class STMAP_OT_export(bpy.types.Operator):
             ok, msg = save_exr_oiio(fp, u, v, w, h, props, exr_windows)
             if ok:
                 return True
-            self.report({'WARNING'}, f"OpenImageIO EXR export failed; falling back to Blender save_render: {msg}")
+            self.report({'ERROR'}, f"OpenImageIO EXR export failed: {msg}")
+            return False
 
         img = bpy.data.images.new("TMP", w, h, alpha=False, float_buffer=is_float)
         img.colorspace_settings.name = 'Non-Color'
         pixels = np.zeros((h, w, 4), dtype=np.float32)
         pixels[..., 0], pixels[..., 1], pixels[..., 3] = u, v, 1.0
         img.pixels.foreach_set(pixels.ravel())
-        
-        rnd = scene.render.image_settings
-        orig = (rnd.file_format, rnd.color_depth, rnd.exr_codec, scene.view_settings.view_transform)
+
         try:
-            rnd.file_format = props.file_format
-            if is_float: rnd.color_depth, rnd.exr_codec = props.exr_depth, props.exr_codec
-            else: rnd.color_depth = props.std_depth
-            scene.view_settings.view_transform = 'Raw'
-            img.save_render(fp, scene=scene)
-            if is_float and exr_windows:
-                ok, msg = update_exr_windows_oiio(fp, exr_windows['data'], exr_windows['display'])
-                if not ok:
-                    self.report({'WARNING'}, f"EXR BBox metadata was not updated: {msg}")
+            img.file_format = props.file_format
+            img.filepath_raw = fp
+            img.save()
             return True
         except Exception as e:
             self.report({'ERROR'}, f"Image save failed: {str(e)}")
             return False
         finally:
-            rnd.file_format, rnd.color_depth, rnd.exr_codec, scene.view_settings.view_transform = orig
             bpy.data.images.remove(img)
             
     def save_png(self, fp, gray, w, h):
@@ -1174,6 +1178,7 @@ class STMAP_OT_add_preset(bl_operators.presets.AddPresetBase, bpy.types.Operator
         "props.file_format",
         "props.exr_depth",
         "props.exr_codec",
+        "props.exr_blue_channel_one",
         "props.std_depth",
         "props.remap_bbox",
         "props.ae_displace_round_up",
@@ -1267,7 +1272,7 @@ class STMAP_PT_main_panel(bpy.types.Panel):
         if not props.output_folder.strip():
             info_row = b.row()
             info_row.scale_y = 0.8
-            info_row.label(text="* Saves next to .blend file when empty", icon='INFO')
+            info_row.label(text=get_default_output_folder_text(), icon='INFO')
             
         r = b.row()
         r.prop(props, "use_custom_name")
@@ -1392,6 +1397,7 @@ class STMAP_PT_main_panel(bpy.types.Panel):
             fb.prop(props, "file_format")
             if props.file_format == 'OPEN_EXR':
                 r = fb.row(); r.prop(props, "exr_depth"); r.prop(props, "exr_codec")
+                fb.prop(props, "exr_blue_channel_one")
             else: 
                 fb.prop(props, "std_depth")
             fb.separator()
