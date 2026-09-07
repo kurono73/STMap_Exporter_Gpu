@@ -327,6 +327,9 @@ def generate_checkerboard(width, height, min_x, min_y, base_w, cx, cy, grid_coun
 def get_extension_from_format(format_enum):
     return {'OPEN_EXR': 'exr', 'TIFF': 'tif', 'PNG': 'png'}.get(format_enum, 'exr')
 
+def should_remap_bbox(props):
+    return props.file_format != 'OPEN_EXR' or props.remap_bbox
+
 def get_default_output_folder_text():
     if bpy.data.filepath:
         return f"Default output: {os.path.dirname(bpy.path.abspath('//'))}"
@@ -946,6 +949,7 @@ class STMAP_OT_export(bpy.types.Operator):
     def export_map(self, ep, context, is_undistort):
         w, h = (ep['out_w'], ep['out_h']) if is_undistort else (int(ep['base_w']), int(ep['base_h']))
         min_x, min_y = (ep['min_x'], ep['min_y']) if is_undistort else (0, 0)
+        remap_bbox = should_remap_bbox(ep['props'])
         
         ys, xs = np.mgrid[0:h, 0:w].astype(np.float64)
         xn = (xs + min_x + 0.5 - ep['cx']) / ep['fx_math']
@@ -963,7 +967,7 @@ class STMAP_OT_export(bpy.types.Operator):
             map_x = (px / ep['base_w']).astype(np.float32)
             map_y = (py / ep['base_h']).astype(np.float32)
         else:
-            if ep['props'].remap_bbox:
+            if remap_bbox:
                 map_x = ((px - ep['min_x']) / ep['out_w']).astype(np.float32)
                 map_y = ((py - ep['min_y']) / ep['out_h']).astype(np.float32)
             else:
@@ -972,7 +976,7 @@ class STMAP_OT_export(bpy.types.Operator):
         
         name = "Undistort" if is_undistort else "Redistort"
         filepath = os.path.join(ep['output_dir'], f"{ep['prefix']}_{name}_STMap.{ep['ext']}")
-        if is_undistort and not ep['props'].remap_bbox:
+        if is_undistort and not remap_bbox:
             exr_windows = {
                 'data': (ep['min_x'], ep['min_y'], ep['max_x'], ep['max_y']),
                 'display': (0, 0, int(ep['base_w']), int(ep['base_h'])),
@@ -1398,10 +1402,9 @@ class STMAP_PT_main_panel(bpy.types.Panel):
             if props.file_format == 'OPEN_EXR':
                 r = fb.row(); r.prop(props, "exr_depth"); r.prop(props, "exr_codec")
                 fb.prop(props, "exr_blue_channel_one")
+                fb.prop(props, "remap_bbox")
             else: 
                 fb.prop(props, "std_depth")
-            fb.separator()
-            fb.prop(props, "remap_bbox")
 
             col.separator()
             col.label(text="After Effects Displacement:")
