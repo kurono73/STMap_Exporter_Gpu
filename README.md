@@ -78,7 +78,7 @@ It accurately calculates Blender's internal distortion models (Polynomial, Divis
 * **Format**: Image format for the exported files. **OpenEXR is highly recommended**.
 * **Color Depth (EXR)**: Choose between 16-bit (Half) or 32-bit (Full) Float. **32-bit Float is strongly recommended** to prevent sub-pixel stepping and banding.
 * **Codec**: Compression method for OpenEXR files. `ZIP` (lossless) is the standard default.
-* **Remap to [0-1] (BBox)**: When exporting the Redistort Map, remaps UV values into a strict 0.0-1.0 range relative to the expanded overscan image. Use this for non-floating-point formats such as PNG or TIFF, or for workflows that do not support EXR dataWindow/displayWindow metadata. For standard EXR/Nuke workflows, leave this OFF to preserve negative/out-of-range UV values and use BBox metadata instead.
+* **Remap to [0-1] (BBox)**: When exporting the Redistort Map as OpenEXR, remaps UV values into a strict 0.0-1.0 range relative to the expanded overscan image. Leave this OFF for standard EXR/Nuke workflows to preserve negative/out-of-range UV values and use BBox metadata instead. PNG/TIFF exports apply this remap automatically because they cannot reliably preserve BBox-style out-of-range UV values.
 
 #### After Effects Displacement
 
